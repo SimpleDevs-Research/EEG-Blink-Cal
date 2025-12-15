@@ -1,5 +1,9 @@
 import os
 from pathlib import Path
+import shutil
+from collections.abc import Iterable
+from typing import List, Tuple, Dict
+
 import numpy as np
 import pandas as pd
 from glob import glob
@@ -7,15 +11,49 @@ import datetime
 from scipy.stats import zscore
 from scipy.signal import find_peaks, savgol_filter
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import matplotlib.colors as mcolors
 import seaborn as sns
 from tqdm import tqdm
-from typing import Iterable
+import statsmodels.formula.api as smf
 
 import warnings
 warnings.simplefilter(action='ignore', category=FutureWarning)
 warnings.simplefilter(action='ignore', category=UserWarning)
 pd.set_option('mode.chained_assignment', None)
 
+
+# GLOBAL VARIABLES 
+# -------------------------------------------------------------
+
+_EXPECTED_FILES = [
+#   'calibration_test.csv',     # <-- Early participants won't have this one
+    'calibration_test_1.csv',
+    'calibration_test_2.csv',
+    'calibration_test_3.csv',
+    'calibration_test_4.csv',
+    'calibration_test_5.csv',
+    'calibration_test_6.csv',
+    'calibration_test_7.csv',
+    'eye.csv',
+    'eeg-rest.csv',
+    'eeg-vr.csv',
+    'pedestrians.csv'
+]
+_FILENAME_REMAP = {
+    'calibration_test.csv':     'calibration_0.csv',
+    'calibration_test_1.csv':   'calibration_1.csv',
+    'calibration_test_2.csv':   'calibration_2.csv',
+    'calibration_test_3.csv':   'calibration_3.csv',
+    'calibration_test_4.csv':   'calibration_4.csv',
+    'calibration_test_5.csv':   'calibration_5.csv',
+    'calibration_test_6.csv':   'calibration_6.csv',
+    'calibration_test_7.csv':   'calibration_7.csv',
+    'eye.csv':                  'eye.csv',
+    'eeg-rest.csv':             'eeg_rest.csv',
+    'eeg-vr.csv':               'eeg_vr.csv',
+    'pedestrians.csv':          'pedestrians.csv'
+}
 _TRIAL_NAMES = [
     "Activation",
     "Trial-ApproachAudio Start", 
@@ -49,16 +87,97 @@ _PREPEND_BUFFER = 100
 _APPEND_BUFFER = 100
 
 
-class Experiment:
-    def __init__(self, root_dir:str, pdirs:Iterable[str], verbose:bool=False):
-        self.root_dir = root_dir
+# HELPER FUNCTIONS
+# -------------------------------------------------------------
+def mkdirs(_DIR:str, delete_existing:bool=True):
+    # If the folder already exists, delete it
+    if delete_existing and os.path.exists(_DIR): shutil.rmtree(_DIR)
+    # Create a new empty directory
+    os.makedirs(_DIR, exist_ok=True)
+    # Return the directory to indicate completion
+    return _DIR
 
-        pbar = tqdm(pdirs)
-        self.participants = []
+
+
+# CLASSES
+# -------------------------------------------------------------
+
+class Experiment:
+    def __init__(self, raw_dir:str, root_dir:str, verbose:bool=False):
+        # Define the root directory
+        self.raw_dir = raw_dir
+        self.root_dir = root_dir
+        self.participants = None
+        # Identifying valid participants, copying and renaming
+        self.valids, self.missing = self.identify_valid_participants(self.raw_dir, _EXPECTED_FILES, verbose)
+        self.pdirs = self.copy_and_rename(self.valids, _FILENAME_REMAP, self.root_dir, verbose)
+        
+    # Initialize participants as Participant class types
+    def initialize_participants(self, verbose:bool=False):
+        assert self.pdirs is not None, "Cannot initialize empty list of participant directories"
+        pbar = tqdm(self.pdirs)     # Initialize progress bar
+        self.participants = []      # Initialize participants list
         for pdir in pbar:
             pbar.set_description(os.path.basename(pdir))
-            self.participants.append(Participant(self, pdir, verbose))
-
+            self.participants.append(Participant(self, pdir, verbose)) 
+    # Looking at a list of raw directories, which participant directories have the necessary files?
+    @staticmethod
+    def identify_valid_participants(root_dir:str, expected_files:Iterable[str], verbose:bool=False):
+        if verbose: print("IDENTIFYING VALID PARTICIPANTS")
+        # Initialize paths
+        root_path = Path(root_dir)
+        expected = set(expected_files) # Define the set of expected files
+        with_all:List[str] = []         # Initialize outputs
+        missing:List[str] = []
+        # Iterating through subdirectories
+        pbar = tqdm(list(root_path.iterdir()))
+        for subdir in pbar:
+            pbar.set_description(subdir.name)
+            # Ignore if subdirectory is not a directory
+            if not subdir.is_dir(): continue
+            # Get present files in the subdirectory
+            present = { p.name for p in subdir.iterdir() if p.is_file() }
+            # Check if files are within subset of expected
+            missing_files = sorted(expected - present)
+            if expected.issubset(present):  with_all.append(str(subdir))
+            else:                           missing.append((str(subdir), len(missing_files), missing_files))
+        # Display (if verbose) and return
+        if verbose:
+            print("Valid participants:", ','.join([os.path.basename(p) for p in with_all]))
+            print("Participants with missing files:")
+            for p in missing: print(f'\t{p}')
+        return with_all, missing
+    # Given a list of valid participant directories, move them to another location to prevent mutation
+    @staticmethod
+    def copy_and_rename( src_subdirs:Iterable[str], rename_map:Dict[str, str], dest_root:str, verbose:bool=False):
+        if verbose: print("COPYING AND RENAMING DIRECTORIES")
+        # Initialize destination directory
+        mkdirs(dest_root)
+        dest_root = Path(dest_root)
+        # Initialize new subdirs list
+        new_subdirs:List[str] = []
+        # Iterate through existing source dirs
+        pbar = tqdm(src_subdirs)
+        for src in pbar:
+            pbar.set_description(os.path.basename(src))
+            src_dir = Path(src)
+            dest_dir = dest_root / src_dir.name
+            mkdirs(str(dest_dir))
+            # Iterate through each file in each source directory
+            for item in src_dir.iterdir():
+                # Ignore any that are not files
+                if not item.is_file(): continue
+                # Remaps
+                new_name = rename_map.get(item.name, item.name)
+                dest_path = dest_dir / new_name
+                # Copy
+                shutil.copy2(item, dest_path)
+            # save new output directory
+            new_subdirs.append(str(dest_dir))
+        # Display (if verbose)
+        if verbose: print("New Source Files:", ','.join(os.path.basename(p) for p in new_subdirs))
+        # Return
+        return new_subdirs
 
 class Participant:
     def __init__(self, parent:Experiment, root_dir:str, verbose:bool=False):
@@ -418,8 +537,11 @@ class Trial:
         return merged
 
 
+# PLOTTERS 
+# -------------------------------------------------------------
 
-def plot_calibration_timeline(pdirs:Iterable[str],  outpath:str=None):
+# For debugging, visualize each participant's calibration timestamps in the eye data
+def plot_calibration_timelines(pdirs:Iterable[str], outname=None, show:bool=True):
     # Define the figure and subplots
     nrows = len(pdirs)
     fig, axes = plt.subplots(nrows, 1, figsize=(12, 2*nrows), constrained_layout=True)
@@ -434,8 +556,6 @@ def plot_calibration_timeline(pdirs:Iterable[str],  outpath:str=None):
         end_time = edf['unix_ms'].max()
         edf['rel_unix_ms'] = edf['unix_ms'] - start_time
         axes[count].plot(edf['rel_unix_ms'], [0]*len(edf), alpha=0.2, label="Eye Dataset Timeline")
-        #axes[count].axvline(x=0, color='blue', linestyle='--', alpha=0.7)
-        #axes[count].text(0, 0.1, f"Eye Start\n{start_time}", rotation=90, verticalalignment='bottom', fontsize=7.5)
         # Read and plot calibration data
         calibration_files = [cal_file for cal_file in sorted(glob(os.path.join(pdir, "calibration_*.csv")))]
         for f in calibration_files:
@@ -456,18 +576,24 @@ def plot_calibration_timeline(pdirs:Iterable[str],  outpath:str=None):
         count+=1
     # Other plot stuff, save if needed, and render
     plt.suptitle(f"Per-Participant Timeline of Eye Data to Calibrations", 
-                    y=0.99, fontsize=16, fontweight="bold")
+                y=0.99, fontsize=16, fontweight="bold")
     plt.xlabel("Relative unix time (ms)")
     plt.tight_layout()
-    if outpath is not None: plt.savefig(outpath, dpi=300, bbox_inches="tight")
-    plt.show()
+    if outname is not None: 
+        if isinstance(outname, Iterable):
+            for o in outname: plt.savefig(o, dpi=300, bbox_inches="tight")
+        elif isinstance(outname, str):
+            plt.savefig(outname, dpi=300, bbox_inches="tight")
+        else:
+            print("WARNING: supplied outname invalid type. Expects either str or Iterable[str]")
+    if show: plt.show()
+    else:    plt.close()
 
-def plot_offsets(participants:Iterable[Participant], 
-                    plot_type:str='box', 
-                    hue_feature:str='channel',
-                    outpath:str=None ):
+# For debugging, visualize the eeg-vr offsets for each participant.
+def plot_offsets(participants:Iterable[Participant], plot_type:str='box', hue_feature:str='channel', outname=None, show:bool=True ):
     # Aggregate offsets across all trials
     offsets = pd.concat([t.offsets for p in participants for t in p.trials if t.offsets is not None])
+    offsets = offsets.sort_values(["pid", "channel", "tid"])
     # Generate the plot
     plt.figure(figsize=(len(participants), 5))  # scale width with N
     # Plot the boxplots
@@ -480,6 +606,7 @@ def plot_offsets(participants:Iterable[Participant],
             orient="v",
             showfliers=False,  # hide outlier dots (since we'll show raw data)
             width=0.6,
+            boxprops=dict(alpha=.35)
         )
     elif plot_type == 'violin':
         sns.violinplot(
@@ -492,8 +619,9 @@ def plot_offsets(participants:Iterable[Participant],
             cut=0,
             dodge=True,
             linewidth=1,
+            alpha=0.35
         )
-    elif plot_type == 'split_violin':
+    elif plot_type == 'violinsplit':
         sns.violinplot(
             data=offsets,
             x="pid",
@@ -503,21 +631,37 @@ def plot_offsets(participants:Iterable[Participant],
             orient="v",
             inner="quartile",
             cut=0,
+            alpha=0.35
         )
     # Overlay jittered raw points
-    sns.stripplot(
+    ax = sns.stripplot(
         data=offsets,
         x="pid",
         y="offset",
         hue="channel",
         dodge=True,
         orient="v",
-        alpha=0.5,
+        alpha=1.0,
         jitter=0.2,
         linewidth=1,
         edgecolor='gray',
         size=4,
+        palette=['gray', 'gray']
     )
+    tids = offsets["tid"].values
+    norm = mcolors.Normalize(vmin=tids.min(), vmax=tids.max())
+    cmap = cm.viridis
+    for collection in ax.collections:
+        offsets_xy = collection.get_offsets()
+        if len(offsets_xy) == 0: continue
+        # Extract matching tids for these points
+        # seaborn preserves row order internally
+        tids_subset = offsets.loc[
+            offsets.index[:len(offsets_xy)], "tid"
+        ]
+        colors = cmap(norm(tids_subset))
+        collection.set_facecolors(colors)
+
     # Other plot stuff
     plt.title("Diff Distributions per Participant (EEG - VR, TP9 & TP10)")
     plt.xlabel("Participant")
@@ -533,12 +677,47 @@ def plot_offsets(participants:Iterable[Participant],
         bbox_to_anchor=(1.05, 1),
         loc="upper left"
     )
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, label="Trial ID", shrink=0.4 )
     # Adjust the layout
     plt.tight_layout()
     # Save the figure if prompted, show if prompted
-    if outpath is not None:     plt.savefig(outpath, bbox_inches='tight', dpi=300)
-    plt.show()
+    if outname is not None: 
+        if isinstance(outname, Iterable):
+            for o in outname: plt.savefig(o, bbox_inches='tight', dpi=300)
+        elif isinstance(outname, str):
+            plt.savefig(outpath, bbox_inches='tight', dpi=300)
+        else:
+            print("WARNING: supplied outname invalid type. Expects either str or Iterable[str]")
+    if show:    plt.show()
+    else:       plt.close()
+    # Return offsets
+    return offsets
 
+
+
+
+# CORRELATION ANALYZERS
+# -------------------------------------------------------------
+def mixed_effects(df:pd.DataFrame):
+    model = smf.mixedlm(
+        "offset ~ tid",
+        data=df,
+        groups=df["pid"],  # random intercept per participant
+    )
+    result = model.fit()
+    print(result.summary())
+
+def random_slopes(df:pd.DataFrame):
+    model = smf.mixedlm(
+        "offset ~ tid",
+        data=df,
+        groups=df["pid"],
+        re_formula="~tid"  # random slope
+    )
+    result = model.fit()
+    print(result.summary())
 
 
 def plot_eye_calibration_timeline(filename:str):
