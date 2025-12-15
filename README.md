@@ -21,7 +21,12 @@ deactivate                  # Deactivate environment
 <details>
 <summary><strong>Windows</strong></summary>
 
-**TBD**
+```bash
+py -3.11 -m venv .venv      # Create `.venv`
+.venv/Scripts/activate.ps1  # Activate environment
+# --- Do whatever you need to do ---
+deactivate                  # Deactivate environment
+```
 </details>
 
 ## Installing Dependencies
