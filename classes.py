@@ -23,6 +23,8 @@ warnings.simplefilter(action='ignore', category=UserWarning)
 pd.set_option('mode.chained_assignment', None)
 
 
+
+
 # GLOBAL VARIABLES 
 # -------------------------------------------------------------
 
@@ -87,6 +89,8 @@ _PREPEND_BUFFER = 100
 _APPEND_BUFFER = 100
 
 
+
+
 # HELPER FUNCTIONS
 # -------------------------------------------------------------
 def mkdirs(_DIR:str, delete_existing:bool=True):
@@ -96,6 +100,7 @@ def mkdirs(_DIR:str, delete_existing:bool=True):
     os.makedirs(_DIR, exist_ok=True)
     # Return the directory to indicate completion
     return _DIR
+
 
 
 
@@ -188,6 +193,8 @@ class Participant:
         self.eye = pd.read_csv(os.path.join(self.root_dir, 'eye.csv'))
         self.eeg_rest_raw, self.eeg_rest_muse, self.eeg_rest_blinks = self.parse_eeg(os.path.join(self.root_dir, 'eeg_rest.csv'))
         self.eeg_vr_raw, self.eeg_vr_muse, self.eeg_vr_blinks = self.parse_eeg(os.path.join(self.root_dir, 'eeg_vr.csv'))
+        self.pedestrians = pd.read_csv(os.path.join(self.root_dir, 'pedestrians.csv'))
+        self.fps = self.pedestrians[['frame','timestamp','deltaTime','frameRateRaw','frameRateSmooth']]
         # Initialize trials
         self.trial_order = self.identify_trials(verbose=verbose)    # Trial Definitions & Order
         self.trials = self.initialize_trials(verbose)       # Initialization of their trials
@@ -296,12 +303,11 @@ class Participant:
         # return 
         return raw_df, processed_df, blinks
 
-
 class Trial:
     def __init__(self, parent:Participant, details:pd.Series, verbose:bool=False):
         self.parent = parent
         self.details = details
-        self.offsets = self.calculate_offsets(verbose)     # Calibrate based on eye and eeg differences
+        self.offsets, self.blink_ranges = self.calculate_offsets(verbose)     # Calibrate based on eye and eeg differences
     def calculate_offsets(self, verbose:bool=False):
         # Get start and end timestamps. Account for the extra 5 seconds that occur at the beginning
         start_time = self.details['cal_start_ms'] + 5000
@@ -344,7 +350,7 @@ class Trial:
         # Exit early if tp9 and tp10 don't contain blinks
         if tp9_blinks is None and tp10_blinks is None:
             print(f"Warning: Could not extract TP9 and TP10 blinks from Participant {self.parent.pid,}, Trial {self.details['tid']}")
-            return None
+            return None, None
 
         # Merge the two three blink data
         vr_tp9 = self.merge_datasets(vr_blinks, tp9_blinks)
@@ -357,7 +363,10 @@ class Trial:
         offsets['tid'] = self.details['tid']
         offsets['pid'] = self.parent.pid
         offsets = offsets[['pid','tid','overlap_counter','channel','vr_x','eeg_x','offset']]
-        return offsets
+        return offsets, blink_ranges
+    @staticmethod
+    def calculate_zscores(x):
+        return zscore(x)
     @staticmethod
     def find_ascent_start(signal, peak_idx, rel_thresh=0.1, min_drop=1e-6):
         # Get the y-value of this signal
@@ -411,9 +420,7 @@ class Trial:
         # Step 6: Return our findings
         return results, peaks, valleys, z
     @classmethod
-    def detect_vr_blinks(cls,
-                        eye_df:pd.DataFrame, 
-                        blink_ranges:pd.DataFrame, 
+    def detect_vr_blinks(cls, eye_df:pd.DataFrame, blink_ranges:pd.DataFrame, 
                         peak_height=0.5, 
                         peak_prominence=1, 
                         peak_width=0, 
@@ -452,9 +459,7 @@ class Trial:
         # return the dfs
         return first_peaks
     @classmethod
-    def detect_eeg_blinks(cls,
-                          eeg_df:pd.DataFrame, 
-                          blink_ranges:pd.DataFrame,
+    def detect_eeg_blinks(cls, eeg_df:pd.DataFrame, blink_ranges:pd.DataFrame,
                           window_length=75,
                           polyorder=3,
                           mode='nearest',
@@ -535,6 +540,7 @@ class Trial:
         merged.rename(columns={'x_x':'vr_x', 'x_y':'eeg_x'}, inplace=True)
         merged['offset'] = merged['eeg_x'] - merged['vr_x']
         return merged
+
 
 
 # PLOTTERS 
@@ -700,25 +706,24 @@ def plot_offsets(participants:Iterable[Participant], plot_type:str='box', hue_fe
 
 # CORRELATION ANALYZERS
 # -------------------------------------------------------------
-def mixed_effects(df:pd.DataFrame):
+def mixed_effects(df:pd.DataFrame, dependent:str, independent:str, group_id:str='pid'):
     model = smf.mixedlm(
-        "offset ~ tid",
+        f"{dependent} ~ {independent}",
         data=df,
-        groups=df["pid"],  # random intercept per participant
+        groups=df[group_id],  # random intercept per participant
     )
     result = model.fit()
     print(result.summary())
 
-def random_slopes(df:pd.DataFrame):
+def random_slopes(df:pd.DataFrame, dependent:str, independent:str, group_id:str='pid'):
     model = smf.mixedlm(
-        "offset ~ tid",
+        f"{dependent} ~ {independent}",
         data=df,
-        groups=df["pid"],
-        re_formula="~tid"  # random slope
+        groups=df[group_id],
+        re_formula=f"~{independent}"  # random slope
     )
     result = model.fit()
     print(result.summary())
-
 
 def plot_eye_calibration_timeline(filename:str):
     # --- Get overall time range ---
@@ -750,3 +755,130 @@ def plot_eye_calibration_timeline(filename:str):
     plt.legend()
     plt.tight_layout()
     plt.show()
+
+
+
+
+# DEBUGGERS
+# -------------------------------------------------------------
+def plot_calibration_with_peaks(experiment:Experiment, 
+                        peak_height=0.5, 
+                        peak_prominence=1, 
+                        peak_width=0, 
+                        valley_height=0.5, 
+                        valley_prominence=1, 
+                        valley_width=0 ):
+    nrows = len(experiment.participants)*2
+    ncols = 6
+
+    fig, axes = plt.subplots(nrows, ncols, figsize=(30, nrows*3))   # 2 inches per row
+    for row_index in range(len(experiment.participants)):
+        p = experiment.participants[row_index]
+        for col_index in range(len(p.trials)):
+            t = p.trials[col_index]
+            blink_ranges = t.blink_ranges
+            if blink_ranges is None:
+                continue
+            true_row_index = row_index*2
+            # Get cal data for this trial
+            cal_start, cal_end = t.details['cal_start_ms']+5000, t.details['sim_start_ms']-500
+            eye = p.eye[p.eye['unix_ms'].between(cal_start, cal_end)]
+            eye_x = eye['unix_ms'].to_list()
+            eye_y = eye['gaze_target_screen_pos_y'].to_list()
+            eye_z = t.calculate_zscores(eye_y)
+            eye_firsts = t.detect_vr_blinks(eye, blink_ranges,
+                peak_height=peak_height, 
+                peak_prominence=peak_prominence, 
+                peak_width=peak_width, 
+                valley_height=valley_height, 
+                valley_prominence=valley_prominence, 
+                valley_width=valley_width )
+            # Get the eeg data for this trial
+            eeg = p.eeg_vr_raw[p.eeg_vr_raw['unix_ms'].between(cal_start, cal_end)]
+            eeg_x = eeg['unix_ms'].to_list()
+            tp9 = eeg['TP9'].to_list()
+            tp10 = eeg['TP10'].to_list()
+            tp9_z = t.calculate_zscores(tp9)
+            tp10_z = t.calculate_zscores(tp10)
+            tp9_firsts, tp10_firsts = t.detect_eeg_blinks(eeg, blink_ranges,
+                peak_height=peak_height, 
+                peak_prominence=peak_prominence, 
+                peak_width=peak_width, 
+                valley_height=valley_height, 
+                valley_prominence=valley_prominence, 
+                valley_width=valley_width )
+            # Let's plot all data in the same axis
+            axes[true_row_index][col_index].set_xlim([cal_start, cal_end])
+            axes[true_row_index+1][col_index].set_xlim([cal_start, cal_end])
+            axes[true_row_index][col_index].plot(eye_x, eye_y, c='orange', alpha=1, label='Eye')
+            axes[true_row_index+1][col_index].plot(eeg_x, tp9_z, c='blue', alpha=0.5, label="TP9")
+            axes[true_row_index+1][col_index].plot(eeg_x, [z-5 for z in tp10_z], c='red', alpha=0.5, label="TP10")
+            # Plot vertical lines for each 
+            for _, row in blink_ranges.iterrows():
+                axes[true_row_index][col_index].axvspan(row['start_unix_ms'], row['end_unix_ms'], color='black', alpha=0.1)
+                axes[true_row_index+1][col_index].axvspan(row['start_unix_ms'], row['end_unix_ms'], color='black', alpha=0.1)
+            for _, peak in eye_firsts.iterrows():
+                axes[true_row_index][col_index].axvline(x=peak['x'], c='orange', alpha=0.25)
+            for _, peak in tp9_firsts.iterrows():
+                axes[true_row_index+1][col_index].axvline(x=peak['x'], c='blue', alpha=0.25)
+            for _, peak in tp10_firsts.iterrows():
+                axes[true_row_index+1][col_index].axvline(x=peak['x'], c='blue', alpha=0.25)
+
+    plt.savefig(os.path.join(experiment.root_dir, 'timings.png'),dpi=300,bbox_inches='tight')
+    plt.tight_layout()
+    plt.show()
+
+def calculate_correlations_btw_offsets_fps(experiment:Experiment):
+    # Inner helper function
+    def raw_fps_median(row, samples):
+        mask = (samples["unix_ms"] >= row.start_unix_ms) & \
+            (samples["unix_ms"] <= row.end_unix_ms)
+        return samples.loc[mask, 'frameRateRaw'].median()
+    def smooth_fps_median(row, samples):
+        mask = (samples["unix_ms"] >= row.start_unix_ms) & \
+            (samples["unix_ms"] <= row.end_unix_ms)
+        return samples.loc[mask, 'frameRateSmooth'].median()
+
+    df_agg = []
+    for p in experiment.participants:
+        fps = pd.merge(left=p.fps, right=p.eye[['unix_ms','frame']], on='frame', how='left')
+        for t in p.trials:
+            # Get offsets
+            if t.offsets is None: continue
+            offsets = t.offsets[t.offsets['channel']=='combined'].groupby(['pid','tid','overlap_counter'], as_index=False).agg({
+                'pid':'first',
+                'tid':'first',
+                'overlap_counter':'first',
+                'channel':'first',
+                'vr_x':'first',
+                'eeg_x':'first',
+                "offset": "mean",
+            })
+            if len(offsets.index) == 0: continue
+            # Get fps, based on blink range
+            blink_ranges = t.blink_ranges
+            blink_ranges["fps_raw_median"] = blink_ranges.apply( raw_fps_median, axis=1, samples=fps)
+            blink_ranges["fps_smooth_median"] = blink_ranges.apply( smooth_fps_median, axis=1, samples=fps)
+            # Merge
+            merged = pd.merge(left=offsets[['pid','tid','overlap_counter','offset']], right=blink_ranges[['overlap_counter','fps_raw_median','fps_smooth_median']], on='overlap_counter', how='left')
+            df_agg.append(merged)
+    df = pd.concat(df_agg, ignore_index=True)
+    print("===== RAW FPS =====")
+    random_slopes(df, dependent='offset', independent='fps_raw_median')
+    print("\n===== SMOOTHED FPS =====")
+    random_slopes(df, dependent='offset', independent='fps_smooth_median')
+
+
+    """
+        offsets = offsets.sort_values(["pid", "channel", "tid"])
+        # Get FPS from participant
+        fps = participant.fps
+        fps['pid'] = participant.pid
+        fps_agg.append(fps)
+    fps = pd.concat(fps_agg)
+    display(fps)
+    """
+    #        offsets = pd.concat([t.offsets for p in participants for t in p.trials if t.offsets is not None])
+    #    offsets = offsets.sort_values(["pid", "channel", "tid"])
+
+
