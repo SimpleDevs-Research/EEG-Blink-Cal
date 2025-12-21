@@ -650,5 +650,22 @@ result = mixed_model.fit()
 print(result.summary())
 
 
+
+from statsmodels.stats.outliers_influence import variance_inflation_factor
+import patsy
+
+y, X = patsy.dmatrices(
+    'Q("offset_eeg-gaze") ~ conf_threshold + fps + C(vr_status) + C(eeg_status) + C(distance)',
+    df,
+    return_type='dataframe'
+)
+
+vif = pd.DataFrame({
+    "variable": X.columns,
+    "VIF": [variance_inflation_factor(X.values, i) for i in range(X.shape[1])]
+})
+print(vif)
+
+
 #for s in experiment.sessions:
 #    s.plot_raw_calibrations()
