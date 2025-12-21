@@ -59,7 +59,7 @@ class Experiment:
             s.calculate_offsets(cache_offsets=cache_offsets, force_calc=force_calc)
             df = s.offsets
             df.insert(loc=0, column='session_name', value=s.sname)
-            df.insert(loc=1, column='device', value=s.device)
+            #df.insert(loc=1, column='device', value=s.device)
             offsets.append(df)
         self.offsets = pd.concat(offsets, ignore_index=True)
         # If cache, save the file
@@ -169,7 +169,7 @@ class Session:
         self.parent = parent
         self.root_dir = root_dir
         self.sname = sname
-        self.device = self.sname.split(".")[1].split("_")[0]
+        #self.device = self.sname.split(".")[1].split("_")[0]
         self.eeg_raw, self.eeg_muse, self.eeg_blinks = self.read_eeg(os.path.join(root_dir, eeg_filename))
         self.gaze_raw = pd.read_csv(os.path.join(root_dir, gaze_filename))
         self.calibrations_raw = [(Path(f).stem, pd.read_csv(os.path.join(root_dir, f))) for f in calibration_filenames]
