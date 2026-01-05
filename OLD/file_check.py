@@ -34,7 +34,7 @@ class FileChecker:
     def __init__(self, root_dir:str):
         self.root_dir = root_dir
         # validate existence of files
-        for f in _EXPECTED: 
+        for f in expected_files: 
             assert os.path.exists(os.path.join(self.root_dir, f)), f"{os.path.basename(self.root_dir)}: \"{f}\" not found"
         # Upon validation, apply mapping for easy reference
         for key in _MAPPINGS:
