@@ -44,7 +44,7 @@ _EEG_MUSE_COLNAMES =    [ 'Delta_TP9','Delta_TP10','Delta_AF7','Delta_AF8',
 #                          "calibration_test_3.csv", "calibration_test_4.csv",
 #                          "calibration_test_5.csv", "calibration_test_6.csv" ]
 _CAL_FILES =            [ '0.25-72.csv', '0.25-90.csv',
-                          '0.5-72.csv', '0.5-90.csv',
+                          # '0.5-72.csv', '0.5-90.csv',
                           '0.75-72.csv', '0.75-90.csv'        ]
 _CALIBRATION_COLUMNS =  [ 'unix_ms', 'frame', 'rel_timestamp', 
                           'event', 'overlap_counter' ]
